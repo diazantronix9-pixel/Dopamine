@@ -1,0 +1,93 @@
+--- a/Application/Dopamine/Jailbreak/DOEnvironmentManager.h
++++ b/Application/Dopamine/Jailbreak/DOEnvironmentManager.h
+@@ -32,5 +32,6 @@
+ - (NSString *)jailbrokenVersion;
+ - (NSString *)systemVersion;
+ 
++- (BOOL)isP12631DiagnosticTarget;
+ - (BOOL)isSupported;
+ - (BOOL)isArm64e;
+--- a/Application/Dopamine/Jailbreak/DOEnvironmentManager.m
++++ b/Application/Dopamine/Jailbreak/DOEnvironmentManager.m
+@@ -244,5 +244,9 @@
+ - (NSString *)versionSupportString
+ {
++    if ([self isP12631DiagnosticTarget]) {
++        return @"iOS 26.3.1 | P1 diagnostic (no kernel actions)";
++    }
++
+     cpu_subtype_t cpuFamily = 0;
+     size_t cpuFamilySize = sizeof(cpuFamily);
+     sysctlbyname("hw.cpufamily", &cpuFamily, &cpuFamilySize, NULL, 0);
+@@ -775,6 +775,15 @@
+     return [self isArm64e];
+ }
+ 
++- (BOOL)isP12631DiagnosticTarget
++{
++    // Exact operating-system version match. No exploit is selected here.
++    return [[self systemVersion] isEqualToString:@"26.3.1"];
++}
++
+ - (BOOL)isSupported
+ {
++    // Enable only the early-exit diagnostic route for this release.
++    if ([self isP12631DiagnosticTarget]) return YES;
++
+     //cpu_subtype_t cpuFamily = 0;
+--- a/Application/Dopamine/Jailbreak/DOJailbreaker.m
++++ b/Application/Dopamine/Jailbreak/DOJailbreaker.m
+@@ -33,3 +33,4 @@
+ #import <CoreServices/LSApplicationProxy.h>
+ #import <sys/utsname.h>
++#import <sys/sysctl.h>
+ #import "spawn.h"
+@@ -573,3 +573,38 @@
+ - (void)runWithError:(NSError **)errOut didRemoveJailbreak:(BOOL*)didRemove showLogs:(BOOL *)showLogs
+ {
++    DOEnvironmentManager *environment = [DOEnvironmentManager sharedManager];
++    if ([environment isP12631DiagnosticTarget]) {
++        // P1 does not probe kernel memory, inject launchd, or alter filesystem state.
++        struct utsname info = {0};
++        uname(&info);
++        char build[128] = {0};
++        size_t buildLength = sizeof(build) - 1;
++        int buildResult = sysctlbyname("kern.osversion", build, &buildLength, NULL, 0);
++        cpu_subtype_t subtype = 0;
++        size_t subtypeLength = sizeof(subtype);
++        int subtypeResult = sysctlbyname("hw.cpusubtype", &subtype, &subtypeLength, NULL, 0);
++        uint32_t family = 0;
++        size_t familyLength = sizeof(family);
++        int familyResult = sysctlbyname("hw.cpufamily", &family, &familyLength, NULL, 0);
++        DOExploitManager *manager = [DOExploitManager sharedManager];
++        NSUInteger kernels = [manager availableExploitsForType:EXPLOIT_TYPE_KERNEL].count;
++        NSUInteger ppl = [manager availableExploitsForType:EXPLOIT_TYPE_PPL].count;
++        NSUInteger pac = [manager availableExploitsForType:EXPLOIT_TYPE_PAC].count;
++        NSString *message = [NSString stringWithFormat:
++            @"P1_2631 version=%@ build=%s hw.machine=%s hw.cpusubtype=%s0x%x hw.cpufamily=%s0x%x arm64e=%d sptm=%d kernelCandidates=%lu pplCandidates=%lu pacCandidates=%lu",
++            [environment systemVersion],
++            buildResult == 0 ? build : "unavailable", info.machine,
++            subtypeResult == 0 ? "" : "unavailable:", subtype,
++            familyResult == 0 ? "" : "unavailable:", family,
++            [environment isArm64e], [environment isSPTM],
++            (unsigned long)kernels, (unsigned long)ppl, (unsigned long)pac];
++        [[DOUIManager sharedInstance] sendLog:message debug:NO];
++        if (didRemove) *didRemove = NO;
++        if (showLogs) *showLogs = YES;
++        if (errOut) *errOut = [NSError errorWithDomain:JBErrorDomain
++            code:JBErrorCodeFailedLoadingExploit userInfo:@{
++            NSLocalizedDescriptionKey : @"P1 diagnostic recorded. Copy log for P2. No exploit executed."
++        }];
++        return;
++    }
+     BOOL removeJailbreakEnabled = [[DOPreferenceManager sharedManager] boolPreferenceValueForKey:@"removeJailbreakEnabled" fallback:NO];
+--- a/Application/Dopamine/UI/DOMainViewController.m
++++ b/Application/Dopamine/UI/DOMainViewController.m
+@@ -182,4 +182,6 @@
+     NSString *jailbreakButtonTitle = DOLocalizedString(@"Button_Jailbreak_Title");
+-    if (!isSupported)
++    if ([[DOEnvironmentManager sharedManager] isP12631DiagnosticTarget])
++        jailbreakButtonTitle = @"P1: iOS 26.3.1 diagnostic";
++    else if (!isSupported)
+         jailbreakButtonTitle = DOLocalizedString(@"Unsupported");
+     else if (isJailbroken)
