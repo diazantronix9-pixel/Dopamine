@@ -1,6 +1,11 @@
 name: Dopamine 3.0.13 upstream and P1 iOS 26.3.1
 
 on:
+  push:
+    branches: ['3.x']
+    paths:
+      - '.github/workflows/build_p1_2631.yml'
+      - 'patches/P1_26_3_1_diagnostico.patch'
   workflow_dispatch:
 
 permissions:
