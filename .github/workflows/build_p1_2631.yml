@@ -1,0 +1,249 @@
+name: Dopamine 3.0.13 upstream and P1 iOS 26.3.1
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dopamine-p1-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: ${{ matrix.variant }} on macOS 15
+    runs-on: macos-15
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [upstream, p1]
+    env:
+      UPSTREAM_SHA: 5b1d2c1c3bf54dd8e3641d29c60cd3a0c13cde88
+      THEOS_SHA: 6e7b8c40e0f5f9f5b2377800dc1e42cd2560d24a
+      TRUSTCACHE_SHA: aa0e8847529cf76576fce8d2dbc9e088c8f1a0df
+      THEOS_SDK_URL: https://github.com/theos/sdks/releases/download/master-146e41f/iPhoneOS16.5.sdk.tar.xz
+      THEOS: ${{ github.workspace }}/theos
+      BASEDIR: ${{ github.workspace }}/source
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout pipeline from fork
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          path: pipeline
+          persist-credentials: false
+
+      - name: Checkout upstream 3.0.13 unchanged
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: opa334/Dopamine
+          ref: 5b1d2c1c3bf54dd8e3641d29c60cd3a0c13cde88
+          submodules: recursive
+          path: source
+          persist-credentials: false
+
+      - name: 01 SDK and 02 submodule gates
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/build-output"
+          printf 'Variant: %s\nSource: %s\n' '${{ matrix.variant }}' "$UPSTREAM_SHA" > "$RUNNER_TEMP/build-output/environment.txt"
+          cd "$BASEDIR"
+          test "$(git rev-parse HEAD)" = "$UPSTREAM_SHA"
+          test -s Application/Dopamine.xcodeproj/project.pbxproj
+          test -s BaseBin/XPF/src/xpf.h
+          test -s BaseBin/ChOma/Makefile
+          test -s BaseBin/opainject/Makefile
+          test -s BaseBin/_external/modules/litehook/src/litehook.c || test -d BaseBin/_external/modules/litehook/src
+          git submodule status --recursive > "$RUNNER_TEMP/build-output/submodules.txt"
+          test -s "$RUNNER_TEMP/build-output/submodules.txt"
+          if grep -Eq '^[-+U]' "$RUNNER_TEMP/build-output/submodules.txt"; then
+            cat "$RUNNER_TEMP/build-output/submodules.txt"
+            exit 21
+          fi
+          xcodebuild -version | tee -a "$RUNNER_TEMP/build-output/environment.txt"
+          SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
+          test -d "$SDK"
+          test -s "$SDK/SDKSettings.plist"
+          xcrun --sdk iphoneos --find clang >> "$RUNNER_TEMP/build-output/environment.txt"
+          test -s "$RUNNER_TEMP/build-output/environment.txt"
+
+      - name: 05 host tools and 06 OpenSSL setup
+        run: |
+          set -euo pipefail
+          brew install make openssl@3 libarchive zstd
+          echo "$(brew --prefix make)/libexec/gnubin" >> "$GITHUB_PATH"
+          echo "OPENSSL_PREFIX=$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
+          test -s "$(brew --prefix openssl@3)/include/openssl/ssl.h"
+          test -x "$(brew --prefix make)/libexec/gnubin/make"
+          test -x "$(command -v zstd)"
+
+      - name: Install Procursus host toolchain
+        uses: dhinakg/procursus-action@4526d5e64410da26bea8073926c0bf8e779293f1
+        with:
+          packages: ldid findutils sed coreutils make
+          cache: false
+
+      - name: 07 ldid and 09 ad-hoc identity gates
+        run: |
+          set -euo pipefail
+          command -v ldid
+          test -s "$(command -v ldid)"
+          test -s "$BASEDIR/Application/Dopamine/Dopamine.entitlements"
+          xcrun --find codesign >/dev/null
+          printf 'Signing: upstream ldid ad-hoc (no Apple identity in this job)\n' >> "$RUNNER_TEMP/build-output/environment.txt"
+
+      - name: 03 pinned Theos checkout, bypass mutable installer
+        run: |
+          set -euo pipefail
+          mkdir -p "$THEOS"
+          cd "$THEOS"
+          git init -q
+          git remote add origin https://github.com/theos/theos.git
+          git fetch -q --depth=1 origin "$THEOS_SHA"
+          git checkout -q --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "$THEOS_SHA"
+          git submodule update --init --recursive
+          test -s "$THEOS/makefiles/common.mk"
+          test -s "$THEOS/vendor/logos/bin/logos.pl" || test -d "$THEOS/vendor/logos"
+
+      - name: 04 pinned Theos iPhoneOS SDK
+        run: |
+          set -euo pipefail
+          mkdir -p "$THEOS/sdks"
+          SDK_ARCHIVE="$RUNNER_TEMP/iPhoneOS16.5.sdk.tar.xz"
+          curl --fail --location --retry 4 --retry-all-errors --connect-timeout 20 \
+            "$THEOS_SDK_URL" --output "$SDK_ARCHIVE"
+          test -s "$SDK_ARCHIVE"
+          xz -t "$SDK_ARCHIVE"
+          tar -tJf "$SDK_ARCHIVE" > "$RUNNER_TEMP/theos-sdk-members.txt"
+          test -s "$RUNNER_TEMP/theos-sdk-members.txt"
+          grep -Fq 'iPhoneOS16.5.sdk/SDKSettings.plist' "$RUNNER_TEMP/theos-sdk-members.txt"
+          tar -xJf "$SDK_ARCHIVE" -C "$THEOS/sdks"
+          test -s "$THEOS/sdks/iPhoneOS16.5.sdk/SDKSettings.plist"
+
+      - name: 05 architecture-correct trustcache tool
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          git clone --quiet https://github.com/CRKatri/trustcache.git trustcache-src
+          cd trustcache-src
+          git checkout -q --detach "$TRUSTCACHE_SHA"
+          test "$(git rev-parse HEAD)" = "$TRUSTCACHE_SHA"
+          ARCH="$(uname -m)"
+          test "$ARCH" = arm64 -o "$ARCH" = x86_64
+          OPENSSL="${OPENSSL_PREFIX}"
+          gmake -j"$(sysctl -n hw.logicalcpu)" OPENSSL=1 \
+            CFLAGS="-O2 -arch $ARCH -I$OPENSSL/include" \
+            LDFLAGS="-arch $ARCH -L$OPENSSL/lib -Wl,-rpath,$OPENSSL/lib"
+          test -s trustcache
+          file trustcache | tee "$RUNNER_TEMP/build-output/trustcache-file.txt"
+          grep -q "$ARCH" "$RUNNER_TEMP/build-output/trustcache-file.txt"
+          sudo install -m 0755 trustcache /opt/procursus/bin/trustcache
+          test -s /opt/procursus/bin/trustcache
+
+      - name: 08 bootstraps (HTTP errors and archive integrity)
+        run: |
+          set -euo pipefail
+          cd "$BASEDIR/Application/Dopamine/Resources"
+          test -s download_bootstraps.sh
+          # Fetch exactly the two upstream endpoints; abort on HTTP 404, bad content, or truncation.
+          for v in 1800 1900; do
+            f="bootstrap_${v}.tar.zst"
+            curl --fail --location --retry 4 --retry-all-errors --connect-timeout 20 \
+              "https://apt.procurs.us/bootstraps/${v}/bootstrap-iphoneos-arm64.tar.zst" --output "$f"
+            test -s "$f"
+            zstd -t "$f"
+          done
+
+      - name: P1 only - apply exact unified diff
+        if: matrix.variant == 'p1'
+        run: |
+          set -euo pipefail
+          PATCH="$GITHUB_WORKSPACE/pipeline/patches/P1_26_3_1_diagnostico.patch"
+          test -s "$PATCH"
+          cd "$BASEDIR"
+          git apply --check "$PATCH"
+          git apply "$PATCH"
+          test -s Application/Dopamine/Jailbreak/DOJailbreaker.m
+          grep -q P1_2631 Application/Dopamine/Jailbreak/DOJailbreaker.m
+          git diff --check
+          git diff --stat | tee "$RUNNER_TEMP/build-output/p1-diff-stat.txt"
+          test -s "$RUNNER_TEMP/build-output/p1-diff-stat.txt"
+
+      - name: 10 NIGHTLY=1 full upstream make and sign
+        run: |
+          set -euo pipefail
+          export PATH="$(brew --prefix make)/libexec/gnubin:$PATH"
+          command -v gmake
+          test -s "$(command -v gmake)"
+          cd "$BASEDIR"
+          test -s Makefile
+          test -s Application/Makefile
+          printf 'Build variant=%s\n' '${{ matrix.variant }}' > "$RUNNER_TEMP/build-output/build.log"
+          gmake -j"$(sysctl -n hw.logicalcpu)" NIGHTLY=1 \
+            2>&1 | tee -a "$RUNNER_TEMP/build-output/build.log"
+          test -s Application/Dopamine.ipa
+          test -s Application/Dopamine.tipa
+          APP="Application/build/Build/Products/Debug-iphoneos/Dopamine.app"
+          test -s "$APP/Dopamine"
+          ldid -e "$APP/Dopamine" > "$RUNNER_TEMP/build-output/entitlements.plist"
+          test -s "$RUNNER_TEMP/build-output/entitlements.plist"
+          plutil -lint "$RUNNER_TEMP/build-output/entitlements.plist"
+
+      - name: 11 packaged bootstrap and 12 nonempty artifact
+        run: |
+          set -euo pipefail
+          cd "$BASEDIR"
+          test -s Application/Dopamine.ipa
+          test -s Application/Dopamine.tipa
+          export IPA_FILE="$BASEDIR/Application/Dopamine.ipa"
+          python3 - <<'PY'
+          import os, zipfile, sys
+          with zipfile.ZipFile(os.environ['IPA_FILE']) as z:
+              bad=z.testzip()
+              if bad: raise SystemExit('Corrupt IPA member: '+bad)
+              names=z.namelist()
+              must=('Payload/Dopamine.app/Dopamine',)
+              for item in must:
+                  assert item in names, 'IPA missing '+item
+                  assert z.getinfo(item).file_size > 0, 'Empty IPA member '+item
+              for suffix in ('/basebin.tar', '/bootstrap_1800.tar.zst',
+                             '/bootstrap_1900.tar.zst', '/sileo.deb', '/libroot.deb'):
+                  matches=[n for n in names if n.endswith(suffix)]
+                  assert len(matches)==1, 'IPA missing/duplicate '+suffix
+                  assert z.getinfo(matches[0]).file_size>0, 'Empty '+suffix
+          PY
+          mkdir -p "$RUNNER_TEMP/ipa-artifact"
+          cp Application/Dopamine.ipa "$RUNNER_TEMP/ipa-artifact/Dopamine-${{ matrix.variant }}.ipa"
+          cp Application/Dopamine.tipa "$RUNNER_TEMP/ipa-artifact/Dopamine-${{ matrix.variant }}.tipa"
+          shasum -a 256 "$RUNNER_TEMP/ipa-artifact"/* > "$RUNNER_TEMP/ipa-artifact/SHA256SUMS.txt"
+          test -s "$RUNNER_TEMP/ipa-artifact/SHA256SUMS.txt"
+          test -s "$RUNNER_TEMP/ipa-artifact/Dopamine-${{ matrix.variant }}.ipa"
+
+      - name: Upload IPA and TIPA
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: Dopamine-${{ matrix.variant == 'p1' && 'P1-26.3.1' || 'Upstream-3.0.13' }}
+          path: ${{ runner.temp }}/ipa-artifact/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Preserve build log on failures
+        if: always()
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/build-output"
+          printf 'variant=%s\nworkflow=%s\n' '${{ matrix.variant }}' "$GITHUB_WORKFLOW" > "$RUNNER_TEMP/build-output/metadata.txt"
+          test -s "$RUNNER_TEMP/build-output/metadata.txt"
+
+      - name: Upload logs separately
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: Dopamine-${{ matrix.variant }}-build-logs
+          path: ${{ runner.temp }}/build-output/
+          if-no-files-found: error
+          retention-days: 14
