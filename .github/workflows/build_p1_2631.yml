@@ -141,7 +141,7 @@ jobs:
           test "$ARCH" = arm64 -o "$ARCH" = x86_64
           OPENSSL="${OPENSSL_PREFIX}"
           gmake -j"$(sysctl -n hw.logicalcpu)" OPENSSL=1 \
-            CFLAGS="-O2 -arch $ARCH -I$OPENSSL/include" \
+            CFLAGS="-O2 -DOPENSSL=1 -arch $ARCH -I$OPENSSL/include" \
             LDFLAGS="-arch $ARCH -L$OPENSSL/lib -Wl,-rpath,$OPENSSL/lib"
           test -s trustcache
           file trustcache | tee "$RUNNER_TEMP/build-output/trustcache-file.txt"
