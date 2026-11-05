@@ -1,0 +1,45 @@
+--- a/Application/Dopamine/Jailbreak/DOJailbreaker.m
++++ b/Application/Dopamine/Jailbreak/DOJailbreaker.m
+@@ -600,6 +600,33 @@
+             [environment isArm64e], [environment isSPTM],
+             (unsigned long)kernels, (unsigned long)ppl, (unsigned long)pac];
+         [[DOUIManager sharedInstance] sendLog:message debug:NO];
++        // Write a truthful self-test report without attempting privileged writes.
++        NSString *stage = @"compatibility_preflight";
++        NSString *report = [NSString stringWithFormat:
++            @"P2 self-test\nversion=%@\nmodel=%s\nos_build=%s\n"
++            "stage=%@\nkernel_rw=false\nppl=false\ntrustcache=false\n"
++            "error=NO_COMPATIBLE_KERNEL_AND_PROTECTION_CHAIN\nsource=%s:%d\n",
++            [environment systemVersion], info.machine,
++            buildResult == 0 ? build : "unknown", stage, __FILE__, __LINE__];
++        NSString *requestedPath = @"/var/mobile/Documents/DopamineSelfTest.txt";
++        NSError *writeError = nil;
++        BOOL wrote = [report writeToFile:requestedPath atomically:YES
++                               encoding:NSUTF8StringEncoding error:&writeError];
++        if (!wrote) {
++            NSString *documents = NSSearchPathForDirectoriesInDomains(
++                NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
++            NSString *fallback = [documents stringByAppendingPathComponent:@"DopamineSelfTest.txt"];
++            NSError *fallbackError = nil;
++            BOOL fallbackOK = [report writeToFile:fallback atomically:YES
++                                         encoding:NSUTF8StringEncoding error:&fallbackError];
++            NSString *line = [NSString stringWithFormat:
++                @"P2 report: system path unavailable (%@), app Documents %@ (%@)",
++                writeError.localizedDescription ?: @"error",
++                fallbackOK ? @"saved" : @"failed",
++                fallbackOK ? fallback : (fallbackError.localizedDescription ?: @"error")];
++            [[DOUIManager sharedInstance] sendLog:line debug:NO];
++        }
++        [[DOUIManager sharedInstance] sendLog:report debug:NO];
+         if (didRemove) *didRemove = NO;
+         if (showLogs) *showLogs = YES;
+         if (errOut) *errOut = [NSError errorWithDomain:JBErrorDomain
+--- a/Application/Dopamine/UI/DOMainViewController.m
++++ b/Application/Dopamine/UI/DOMainViewController.m
+@@ -182,5 +182,5 @@
+     NSString *jailbreakButtonTitle = DOLocalizedString(@"Button_Jailbreak_Title");
+     if ([[DOEnvironmentManager sharedManager] isP12631DiagnosticTarget])
+-        jailbreakButtonTitle = @"P1: iOS 26.3.1 diagnostic";
++        jailbreakButtonTitle = @"P2: Ver informe del dispositivo";
+     else if (!isSupported)
+         jailbreakButtonTitle = DOLocalizedString(@"Unsupported");
