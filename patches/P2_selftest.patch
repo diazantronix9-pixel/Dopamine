@@ -8,8 +8,8 @@
 +        NSString *stage = @"compatibility_preflight";
 +        NSString *report = [NSString stringWithFormat:
 +            @"P2 self-test\nversion=%@\nmodel=%s\nos_build=%s\n"
-+            "stage=%@\nkernel_rw=false\nppl=false\ntrustcache=false\n"
-+            "error=NO_COMPATIBLE_KERNEL_AND_PROTECTION_CHAIN\nsource=%s:%d\n",
++            @"stage=%@\nkernel_rw=false\nppl=false\ntrustcache=false\n"
++            @"error=NO_COMPATIBLE_KERNEL_AND_PROTECTION_CHAIN\nsource=%s:%d\n",
 +            [environment systemVersion], info.machine,
 +            buildResult == 0 ? build : "unknown", stage, __FILE__, __LINE__];
 +        NSString *requestedPath = @"/var/mobile/Documents/DopamineSelfTest.txt";
